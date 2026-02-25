@@ -2,14 +2,22 @@ import type {
   JupyterFrontEnd,
   JupyterFrontEndPlugin
 } from '@jupyterlab/application';
+import { distributedRendererFactory } from './mimeRenderer';
 
-const plugin: JupyterFrontEndPlugin<void> = {
-  id: '@jupyterlab/distributed-extension:plugin',
-  description: 'Provides distributed SPMD cell execution support.',
+/**
+ * Plugin that registers the distributed per-rank MIME renderer.
+ */
+const mimePlugin: JupyterFrontEndPlugin<void> = {
+  id: '@jupyterlab/distributed-extension:mime-renderer',
+  description: 'Renders per-rank distributed output with rank selector.',
   autoStart: true,
-  activate: (app: JupyterFrontEnd): void => {
-    console.warn('Distributed extension activated');
+  activate: (_app: JupyterFrontEnd): void => {
+    // MIME renderer registration happens via the rendererFactory export
+    console.warn('Distributed MIME renderer plugin activated');
   }
 };
 
-export default [plugin];
+// Export the renderer factory for MIME registration
+export const rendererFactory = distributedRendererFactory;
+
+export default [mimePlugin];

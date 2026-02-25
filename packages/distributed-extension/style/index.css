@@ -1,1 +1,75 @@
-/* Distributed extension styles - populated in Tasks 10-11 */
+/* === MIME Renderer: Rank Selector === */
+.jp-DistributedOutput-tabBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 4px;
+  border-bottom: 1px solid var(--jp-border-color1);
+  background: var(--jp-layout-color1);
+}
+
+.jp-DistributedOutput-tab {
+  padding: 2px 8px;
+  border: 1px solid var(--jp-border-color1);
+  border-radius: 3px;
+  background: var(--jp-layout-color2);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: var(--jp-code-font-family);
+}
+
+.jp-DistributedOutput-tab:hover {
+  background: var(--jp-layout-color3);
+}
+
+.jp-DistributedOutput-tab.jp-mod-active {
+  background: var(--jp-brand-color1);
+  color: white;
+  border-color: var(--jp-brand-color1);
+}
+
+.jp-DistributedOutput-tab.jp-mod-ok {
+  border-left: 3px solid var(--jp-success-color1);
+}
+
+.jp-DistributedOutput-tab.jp-mod-error {
+  border-left: 3px solid var(--jp-error-color1);
+}
+
+.jp-DistributedOutput-allTab {
+  margin-left: auto;
+}
+
+.jp-DistributedOutput-content {
+  padding: 4px;
+}
+
+.jp-DistributedOutput-rankSection {
+  margin: 4px 0;
+  border: 1px solid var(--jp-border-color2);
+  border-radius: 3px;
+}
+
+.jp-DistributedOutput-rankSection > summary {
+  padding: 4px 8px;
+  background: var(--jp-layout-color2);
+  cursor: pointer;
+  font-family: var(--jp-code-font-family);
+  font-size: 12px;
+}
+
+.jp-DistributedOutput-outputItem {
+  margin: 2px 0;
+  padding: 4px 8px;
+  white-space: pre-wrap;
+  font-family: var(--jp-code-font-family);
+  font-size: var(--jp-code-font-size);
+}
+
+.jp-DistributedOutput-outputItem.jp-mod-stderr {
+  color: var(--jp-warn-color1);
+}
+
+.jp-DistributedOutput-outputItem.jp-mod-error {
+  color: var(--jp-error-color1);
+}
