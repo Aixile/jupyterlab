@@ -109,6 +109,18 @@ class Worker:
             logger.exception("Worker rank %d: unexpected error", self.rank)
         finally:
             self._ws = None
+            # Interrupt any running execution thread so it does not keep
+            # consuming CPU after the worker task has been cancelled.
+            tid = getattr(self, "_exec_thread_id", None)
+            if tid is not None:
+                self._handle_interrupt()
+            current = getattr(self, "_current_execution", None)
+            if current is not None and not current.done():
+                current.cancel()
+                try:
+                    await current
+                except (asyncio.CancelledError, Exception):
+                    pass
             if self._log_file is not None:
                 self._log_file.close()
                 self._log_file = None
@@ -138,6 +150,7 @@ class Worker:
 
     async def _message_loop(self, ws: websockets.WebSocketClientProtocol) -> None:
         """Read messages from the gateway and dispatch by type."""
+        self._current_execution: asyncio.Task | None = None
         async for raw_msg in ws:
             if self._shutdown:
                 break
@@ -153,12 +166,27 @@ class Worker:
             msg_type = msg.get("type")
 
             if msg_type == "execute":
-                await self._handle_execute(ws, msg)
+                # Run execution as background task so we can still process interrupts
+                if self._current_execution and not self._current_execution.done():
+                    # Wait for previous execution to finish before starting new one
+                    await self._current_execution
+                self._current_execution = asyncio.create_task(
+                    self._handle_execute(ws, msg)
+                )
             elif msg_type == "interrupt":
                 self._handle_interrupt()
             elif msg_type == "reset":
+                # Cancel any running execution first
+                if self._current_execution and not self._current_execution.done():
+                    self._current_execution.cancel()
+                    try:
+                        await self._current_execution
+                    except asyncio.CancelledError:
+                        pass
                 self._handle_reset()
             elif msg_type == "shutdown":
+                if self._current_execution and not self._current_execution.done():
+                    self._current_execution.cancel()
                 self._shutdown = True
                 break
             else:
@@ -167,6 +195,13 @@ class Worker:
                     self.rank,
                     msg_type,
                 )
+
+        # Wait for any in-flight execution to finish
+        if self._current_execution and not self._current_execution.done():
+            try:
+                await self._current_execution
+            except asyncio.CancelledError:
+                pass
 
     def _run_cell_sync(self, code: str) -> dict:
         """Run code in the IPython shell synchronously (called from a thread).
@@ -301,23 +336,33 @@ class Worker:
         await ws.send(json.dumps(complete_msg))
 
     def _handle_interrupt(self) -> None:
-        """Send SIGINT to the execution thread to interrupt running code.
+        """Raise KeyboardInterrupt in the execution thread to interrupt running code.
 
         If code is executing in a background thread (via ``asyncio.to_thread``),
-        we use ``signal.pthread_kill`` (on platforms that support it) to target
-        that thread specifically. Otherwise falls back to raising SIGINT on the
-        main process.
+        we use ``ctypes.pythonapi.PyThreadState_SetAsyncExc`` to inject a
+        ``KeyboardInterrupt`` into that thread. This raises the exception at
+        the next Python bytecode instruction boundary.
+
+        Note: This will not interrupt C-level blocking calls (e.g.
+        ``time.sleep``). For C-level calls, the interrupt is deferred until
+        the C call returns and Python resumes bytecode execution.
         """
-        import threading
+        import ctypes
 
         tid = getattr(self, "_exec_thread_id", None)
-        if tid is not None and hasattr(signal, "pthread_kill"):
-            # Send SIGINT to the specific execution thread
+        if tid is not None:
             try:
-                signal.pthread_kill(tid, signal.SIGINT)
-                return
-            except (OSError, ValueError):
+                ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
+                )
+                if ret > 1:
+                    # More than one thread affected — undo to be safe
+                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                        ctypes.c_ulong(tid), None
+                    )
+            except (OSError, ValueError, SystemError):
                 pass
+            return
 
         # Fallback: raise SIGINT on the process (main thread)
         signal.raise_signal(signal.SIGINT)

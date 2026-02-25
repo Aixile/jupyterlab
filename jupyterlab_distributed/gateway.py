@@ -175,6 +175,33 @@ class Gateway:
         """Get buffered outputs for a given execution msg_id."""
         return self._pending_outputs.get(msg_id, {})
 
+    def _fail_pending_for_rank(self, rank: int) -> None:
+        """Mark any pending executions for a disconnected rank as failed.
+
+        When a worker disconnects mid-execution, its result will never arrive.
+        This method fills in an error result for the rank and checks whether
+        all target ranks now have results, setting the completion event if so.
+        """
+        for msg_id, targets in list(self._target_ranks.items()):
+            if rank in targets:
+                if msg_id not in self._pending_results:
+                    self._pending_results[msg_id] = {}
+                if rank not in self._pending_results[msg_id]:
+                    self._pending_results[msg_id][rank] = {
+                        "status": "error",
+                        "ename": "WorkerDisconnected",
+                        "evalue": f"Worker rank {rank} disconnected",
+                        "outputs": [],
+                        "execution_time": 0,
+                    }
+                # Check if all target ranks now have results
+                if targets.issubset(
+                    set(self._pending_results[msg_id].keys())
+                ):
+                    event = self._completion_events.get(msg_id)
+                    if event:
+                        event.set()
+
     async def _broadcast(self, message: str) -> None:
         """Send a message to all connected workers."""
         disconnected: list[int] = []
@@ -187,6 +214,7 @@ class Gateway:
 
         for rank in disconnected:
             del self.workers[rank]
+            self._fail_pending_for_rank(rank)
 
     async def _handle_connection(self, ws: WebSocketServerProtocol) -> None:
         """Handle a new WebSocket connection from a worker."""
@@ -257,11 +285,16 @@ class Gateway:
             logger.exception("Unexpected error in connection handler")
         finally:
             # Clean up disconnected worker
+            rank = None
             for r, w in list(self.workers.items()):
                 if w.ws is ws:
+                    rank = r
                     del self.workers[r]
                     logger.info("Worker rank %d disconnected", r)
                     break
+
+            if rank is not None:
+                self._fail_pending_for_rank(rank)
 
     async def _handle_worker_message(
         self, rank: int, msg: dict[str, Any]

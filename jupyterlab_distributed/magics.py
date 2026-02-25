@@ -169,9 +169,13 @@ class DistributedMagics(Magics):
         coro = gateway.broadcast_shutdown()
         try:
             loop = asyncio.get_running_loop()
-            # If we are inside a running event loop, schedule it as a task
-            loop.create_task(coro)
         except RuntimeError:
+            loop = None
+
+        if loop is not None and loop.is_running():
+            future = asyncio.run_coroutine_threadsafe(coro, loop)
+            future.result(timeout=10)
+        else:
             asyncio.run(coro)
 
         print("Hard restart: shutdown broadcast sent to all workers.")
@@ -224,8 +228,20 @@ class DistributedMagics(Magics):
             coro = gateway.send_to_rank(target_rank, cell, cell_id="")
             try:
                 loop = asyncio.get_running_loop()
-                loop.create_task(coro)
             except RuntimeError:
+                loop = None
+
+            if loop is not None and loop.is_running():
+                # We are inside a running event loop (e.g. Jupyter kernel).
+                # Use run_coroutine_threadsafe to schedule on the running
+                # loop and block until the send completes so that exceptions
+                # (e.g. KeyError for unknown ranks) propagate to the caller.
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                future.result(timeout=10)
+            else:
+                # No running event loop — run synchronously
                 asyncio.run(coro)
-        except (KeyError, Exception) as exc:
+        except KeyError:
+            print(f"Error: Rank {target_rank} is not connected")
+        except Exception as exc:
             print(f"Error: Could not send to rank {target_rank}: {exc}")
