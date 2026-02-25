@@ -1,0 +1,12 @@
+{
+  "argv": [
+    "python", "-m", "ipykernel_launcher", "-f", "{connection_file}"
+  ],
+  "display_name": "Distributed Python",
+  "language": "python",
+  "metadata": {
+    "kernel_provisioner": {
+      "provisioner_name": "distributed-provisioner"
+    }
+  }
+}
