@@ -211,9 +211,11 @@ class TestRankMagic:
 
     def test_rank_nonzero_sends_to_gateway(self, magics):
         """'%%rank N' for N>0 sends execution to gateway for that rank."""
-        magics.kernel._gateway.send_to_rank = MagicMock()
+        magics.kernel._gateway.send_to_rank = AsyncMock()
         magics.rank("1", "remote_code = True")
-        magics.kernel._gateway.send_to_rank.assert_called_once_with(1, "remote_code = True")
+        magics.kernel._gateway.send_to_rank.assert_called_once_with(
+            1, "remote_code = True", cell_id=""
+        )
 
     def test_rank_invalid_number(self, magics, capsys):
         """'%%rank abc' prints an error."""
@@ -229,7 +231,7 @@ class TestRankMagic:
 
     def test_rank_not_found(self, magics, capsys):
         """'%%rank N' for unknown rank prints an error."""
-        magics.kernel._gateway.send_to_rank = MagicMock(
+        magics.kernel._gateway.send_to_rank = AsyncMock(
             side_effect=KeyError("rank 99 not found")
         )
         magics.rank("99", "code = 1")

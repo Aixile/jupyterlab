@@ -168,20 +168,15 @@ class Worker:
                     msg_type,
                 )
 
-    async def _handle_execute(
-        self, ws: websockets.WebSocketClientProtocol, msg: dict
-    ) -> None:
-        """Execute code and send back results and outputs.
+    def _run_cell_sync(self, code: str) -> dict:
+        """Run code in the IPython shell synchronously (called from a thread).
 
-        Redirects stdout/stderr to capture output, runs the code in the
-        IPython shell, and sends back stream messages and execute_complete.
+        Returns a dict with stdout, stderr, status, error info, and timing.
+        This method is designed to be called via ``asyncio.to_thread()``
+        so that the event loop remains free to process interrupt messages.
         """
-        msg_id = msg.get("msg_id", "")
-        code = msg.get("code", "")
-
         start_time = time.monotonic()
 
-        # Redirect stdout and stderr
         stdout_capture = StringIO()
         stderr_capture = StringIO()
 
@@ -198,7 +193,6 @@ class Worker:
 
         execution_time = time.monotonic() - start_time
 
-        # Check for errors
         status = "ok"
         ename = ""
         evalue = ""
@@ -217,6 +211,48 @@ class Worker:
             evalue = str(exc)
             tb_lines = traceback.format_exception(type(exc), exc, exc.__traceback__)
 
+        return {
+            "stdout": stdout_capture.getvalue(),
+            "stderr": stderr_capture.getvalue(),
+            "status": status,
+            "ename": ename,
+            "evalue": evalue,
+            "traceback": tb_lines,
+            "execution_time": execution_time,
+        }
+
+    async def _handle_execute(
+        self, ws: websockets.WebSocketClientProtocol, msg: dict
+    ) -> None:
+        """Execute code and send back results and outputs.
+
+        Runs the code in a separate thread via ``asyncio.to_thread()`` so
+        that the event loop remains responsive to incoming messages (e.g.
+        interrupt). After execution completes, sends back stream messages
+        and execute_complete on the event loop thread.
+        """
+        msg_id = msg.get("msg_id", "")
+        code = msg.get("code", "")
+
+        # Store the execution thread ID so _handle_interrupt can target it
+        import threading
+
+        self._exec_thread_id: int | None = None
+
+        def _run_in_thread() -> dict:
+            self._exec_thread_id = threading.get_ident()
+            try:
+                return self._run_cell_sync(code)
+            finally:
+                self._exec_thread_id = None
+
+        cell_result = await asyncio.to_thread(_run_in_thread)
+
+        status = cell_result["status"]
+        ename = cell_result["ename"]
+        evalue = cell_result["evalue"]
+        tb_lines = cell_result["traceback"]
+
         # Send error output message if there was an error
         if status == "error":
             error_msg = json.dumps({
@@ -229,7 +265,7 @@ class Worker:
             await ws.send(error_msg)
 
         # Send captured stdout as stream message
-        stdout_text = stdout_capture.getvalue()
+        stdout_text = cell_result["stdout"]
         if stdout_text:
             stream_msg = json.dumps({
                 "type": "stream",
@@ -240,7 +276,7 @@ class Worker:
             await ws.send(stream_msg)
 
         # Send captured stderr as stream message
-        stderr_text = stderr_capture.getvalue()
+        stderr_text = cell_result["stderr"]
         if stderr_text:
             stream_msg = json.dumps({
                 "type": "stream",
@@ -255,7 +291,7 @@ class Worker:
             "type": "execute_complete",
             "msg_id": msg_id,
             "status": status,
-            "execution_time": execution_time,
+            "execution_time": cell_result["execution_time"],
         }
         if status == "error":
             complete_msg["ename"] = ename
@@ -265,7 +301,25 @@ class Worker:
         await ws.send(json.dumps(complete_msg))
 
     def _handle_interrupt(self) -> None:
-        """Raise SIGINT to interrupt the current execution."""
+        """Send SIGINT to the execution thread to interrupt running code.
+
+        If code is executing in a background thread (via ``asyncio.to_thread``),
+        we use ``signal.pthread_kill`` (on platforms that support it) to target
+        that thread specifically. Otherwise falls back to raising SIGINT on the
+        main process.
+        """
+        import threading
+
+        tid = getattr(self, "_exec_thread_id", None)
+        if tid is not None and hasattr(signal, "pthread_kill"):
+            # Send SIGINT to the specific execution thread
+            try:
+                signal.pthread_kill(tid, signal.SIGINT)
+                return
+            except (OSError, ValueError):
+                pass
+
+        # Fallback: raise SIGINT on the process (main thread)
         signal.raise_signal(signal.SIGINT)
 
     def _handle_reset(self) -> None:

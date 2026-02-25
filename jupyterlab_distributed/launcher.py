@@ -50,11 +50,14 @@ def detect_world_size() -> int:
 def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
     """Start the Gateway and DistributedKernel on rank-0.
 
-    This is a placeholder implementation.  The full kernel launch
-    sequence (ZMQ sockets, IPython kernel app, etc.) is complex and
-    will be wired up in a later task.  For now we just update the
-    session config to ``running`` and log the intent.
+    Starts the WebSocket gateway so workers can connect, updates the
+    session config with the actual host/port and marks it ``running``.
+    The full IPython kernel launch (ZMQ sockets, IPKernelApp) is left
+    as a TODO for the Kernel Provisioner task (Task 7), but the gateway
+    is fully functional.
     """
+    from .gateway import Gateway
+
     logger.info(
         "Rank-0: starting gateway on port %d for kernel %s (world_size=%d)",
         config.gateway_port,
@@ -62,12 +65,44 @@ def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
         config.world_size,
     )
 
-    # Mark the session as running so workers can proceed
-    config.update(status="running")
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
 
-    # TODO: Start Gateway and DistributedKernel here.
-    # This will be implemented by the Kernel Provisioner task (Task 7).
-    logger.info("Rank-0: placeholder -- gateway and kernel not yet wired")
+    gateway = Gateway(
+        port=config.gateway_port,
+        auth_token=config.auth_token,
+        expected_workers=config.world_size - 1,  # rank-0 is not a worker
+    )
+
+    try:
+        loop.run_until_complete(gateway.start())
+
+        # Update config with actual host and port (port may have changed if 0)
+        import socket as _socket
+
+        actual_host = config.host or _socket.gethostname()
+        config.update(
+            status="running",
+            host=actual_host,
+            gateway_port=gateway.port,
+        )
+
+        logger.info(
+            "Rank-0: gateway started on %s:%d",
+            actual_host,
+            gateway.port,
+        )
+
+        # TODO: Start DistributedKernel (IPKernelApp) here.
+        # This will be implemented by the Kernel Provisioner task (Task 7).
+
+        # Keep the event loop running so the gateway stays alive
+        loop.run_forever()
+    except KeyboardInterrupt:
+        logger.info("Rank-0: interrupted, shutting down")
+    finally:
+        loop.run_until_complete(gateway.stop())
+        loop.close()
 
 
 def _run_worker(rank: int, config: SessionConfig, log_dir: str | None) -> None:

@@ -58,6 +58,7 @@ class Gateway:
         self._pending_outputs: dict[str, dict[int, list[dict[str, Any]]]] = {}
         self._completion_events: dict[str, asyncio.Event] = {}
         self._output_sizes: dict[str, dict[int, int]] = {}
+        self._target_ranks: dict[str, set[int]] = {}
         self._server: Any = None
 
     async def start(self) -> None:
@@ -91,12 +92,19 @@ class Gateway:
         """Broadcast an execute message to all connected workers.
 
         Returns the generated msg_id for tracking results.
+
+        A snapshot of the currently connected worker ranks is stored so
+        that the completion check compares against the workers that were
+        present at broadcast time, not at result-arrival time.
         """
         msg_id = str(uuid.uuid4())
         self._pending_results[msg_id] = {}
         self._pending_outputs[msg_id] = {}
         self._output_sizes[msg_id] = {}
         self._completion_events[msg_id] = asyncio.Event()
+
+        # Snapshot: record which ranks should respond to this message
+        self._target_ranks[msg_id] = set(self.workers.keys())
 
         message = json.dumps({
             "type": "execute",
@@ -106,6 +114,33 @@ class Gateway:
         })
 
         await self._broadcast(message)
+        return msg_id
+
+    async def send_to_rank(self, rank: int, code: str, cell_id: str = "") -> str:
+        """Send an execute message to a specific worker only.
+
+        Returns the generated msg_id for tracking results.
+        Raises KeyError if the rank is not connected.
+        """
+        if rank not in self.workers:
+            raise KeyError(f"Rank {rank} is not connected")
+
+        msg_id = str(uuid.uuid4())
+        self._pending_results[msg_id] = {}
+        self._pending_outputs[msg_id] = {}
+        self._output_sizes[msg_id] = {}
+        self._completion_events[msg_id] = asyncio.Event()
+        self._target_ranks[msg_id] = {rank}
+
+        message = json.dumps({
+            "type": "execute",
+            "code": code,
+            "cell_id": cell_id,
+            "msg_id": msg_id,
+        })
+
+        worker = self.workers[rank]
+        await worker.ws.send(message)
         return msg_id
 
     async def broadcast_interrupt(self) -> None:
@@ -240,13 +275,28 @@ class Gateway:
                 return
             if msg_id not in self._pending_results:
                 self._pending_results[msg_id] = {}
+
+            # Merge buffered outputs into the result so that
+            # collect_results() returns complete per-rank data
+            # including all stream/display/error messages.
+            outputs = self._pending_outputs.get(msg_id, {}).get(rank, [])
+            msg["outputs"] = outputs
+
             self._pending_results[msg_id][rank] = msg
 
-            # Check if all connected workers have reported
-            if len(self._pending_results[msg_id]) >= len(self.workers):
-                event = self._completion_events.get(msg_id)
-                if event is not None:
-                    event.set()
+            # Check if all target ranks have reported (use snapshot if available)
+            target_ranks = self._target_ranks.get(msg_id)
+            if target_ranks is not None:
+                if target_ranks.issubset(self._pending_results[msg_id].keys()):
+                    event = self._completion_events.get(msg_id)
+                    if event is not None:
+                        event.set()
+            else:
+                # Fallback for messages without a snapshot (e.g. old API usage)
+                if len(self._pending_results[msg_id]) >= len(self.workers):
+                    event = self._completion_events.get(msg_id)
+                    if event is not None:
+                        event.set()
 
         elif msg_type in ("stream", "display_data", "execute_result", "error"):
             if msg_id is None:

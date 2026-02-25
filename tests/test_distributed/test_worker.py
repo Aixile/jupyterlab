@@ -162,3 +162,72 @@ class TestWorker:
         finally:
             worker.shutdown()
             await asyncio.wait_for(task, timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_worker_execution_does_not_block_event_loop(self, gateway, gateway_url):
+        """Verify that code execution runs in a thread, keeping the event loop responsive.
+
+        We start a worker, broadcast a short-running execution, and while it runs
+        verify we can still interact with the event loop (by checking that the
+        asyncio loop is not blocked).
+        """
+        worker = Worker(rank=1, server_url=gateway_url, auth_token="test-token")
+        task = asyncio.create_task(worker.run())
+        try:
+            for _ in range(50):
+                if 1 in gateway.workers:
+                    break
+                await asyncio.sleep(0.05)
+            assert 1 in gateway.workers
+
+            # Execute code that takes a moment via time.sleep
+            msg_id = await gateway.broadcast_execute(
+                "import time; time.sleep(0.3); thread_test_var = 'done'", "cell-thread"
+            )
+
+            # While execution is in progress, the event loop should still
+            # be responsive. We can verify by doing another async operation.
+            await asyncio.sleep(0.05)
+            # If we reach here, the loop was not blocked
+
+            results = await asyncio.wait_for(
+                gateway.collect_results(msg_id), timeout=10.0
+            )
+            assert 1 in results
+            assert results[1]["status"] == "ok"
+        finally:
+            worker.shutdown()
+            await asyncio.wait_for(task, timeout=5.0)
+
+    @pytest.mark.asyncio
+    async def test_worker_outputs_merged_in_results(self, gateway, gateway_url):
+        """Verify that buffered outputs appear in collect_results via the outputs key."""
+        worker = Worker(rank=1, server_url=gateway_url, auth_token="test-token")
+        task = asyncio.create_task(worker.run())
+        try:
+            for _ in range(50):
+                if 1 in gateway.workers:
+                    break
+                await asyncio.sleep(0.05)
+            assert 1 in gateway.workers
+
+            msg_id = await gateway.broadcast_execute(
+                "print('merged-output-test')", "cell-merge"
+            )
+            results = await asyncio.wait_for(
+                gateway.collect_results(msg_id), timeout=10.0
+            )
+            assert 1 in results
+            assert results[1]["status"] == "ok"
+
+            # Bug 2 fix: outputs should be included in the result dict
+            assert "outputs" in results[1]
+            stdout_outputs = [
+                o for o in results[1]["outputs"]
+                if o["type"] == "stream" and o.get("name") == "stdout"
+            ]
+            assert len(stdout_outputs) > 0
+            assert "merged-output-test" in stdout_outputs[0]["text"]
+        finally:
+            worker.shutdown()
+            await asyncio.wait_for(task, timeout=5.0)

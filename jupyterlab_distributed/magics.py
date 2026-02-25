@@ -221,6 +221,11 @@ class DistributedMagics(Magics):
             return
 
         try:
-            gateway.send_to_rank(target_rank, cell)
+            coro = gateway.send_to_rank(target_rank, cell, cell_id="")
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(coro)
+            except RuntimeError:
+                asyncio.run(coro)
         except (KeyError, Exception) as exc:
             print(f"Error: Could not send to rank {target_rank}: {exc}")

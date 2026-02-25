@@ -1,14 +1,17 @@
 """Tests for the launcher entry point (torchrun-compatible)."""
 
+import asyncio
 import json
 import os
 import tempfile
+import threading
 from pathlib import Path
 from unittest.mock import patch, MagicMock, AsyncMock
 
 import pytest
 
-from jupyterlab_distributed.launcher import detect_rank, detect_world_size, main
+from jupyterlab_distributed.launcher import detect_rank, detect_world_size, _run_rank0, main
+from jupyterlab_distributed.config import SessionConfig
 
 
 class TestDetectRank:
@@ -186,3 +189,46 @@ class TestMainArgparse:
                     main()
                     call_args = mock_rank0.call_args
                     assert call_args[0][1] == log_dir
+
+
+class TestRunRank0:
+    def test_run_rank0_starts_gateway_and_updates_config(self, tmp_path):
+        """_run_rank0 starts the gateway, updates config to 'running' with host."""
+        config_data = {
+            "kernel_id": "test-kernel",
+            "world_size": 2,
+            "gateway_port": 0,
+            "zmq_ports": {"shell": 1, "iopub": 2, "stdin": 3, "control": 4, "hb": 5},
+            "auth_token": "abc123",
+            "status": "waiting",
+            "host": None,
+            "created_at": 1000.0,
+            "ttl_seconds": 3600,
+            "path": str(tmp_path / "test.json"),
+        }
+        config_path = tmp_path / "test.json"
+        config_path.write_text(json.dumps(config_data))
+        config = SessionConfig.load(config_path)
+
+        # Run _run_rank0 in a thread and stop it after it updates the config
+        def run_rank0_in_thread():
+            _run_rank0(config, log_dir=None)
+
+        t = threading.Thread(target=run_rank0_in_thread, daemon=True)
+        t.start()
+
+        # Wait for config to be updated to "running"
+        import time
+        for _ in range(100):
+            try:
+                refreshed = SessionConfig.load(config_path)
+                if refreshed.status == "running":
+                    break
+            except Exception:
+                pass
+            time.sleep(0.05)
+
+        refreshed = SessionConfig.load(config_path)
+        assert refreshed.status == "running"
+        assert refreshed.host is not None
+        assert refreshed.gateway_port != 0  # Port was assigned
