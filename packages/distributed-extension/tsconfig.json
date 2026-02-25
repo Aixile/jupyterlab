@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfigbase",
+  "compilerOptions": {
+    "outDir": "lib",
+    "rootDir": "src"
+  },
+  "include": ["src/*"],
+  "references": [
+    { "path": "../application" },
+    { "path": "../apputils" },
+    { "path": "../distributed" },
+    { "path": "../notebook" },
+    { "path": "../rendermime-interfaces" },
+    { "path": "../services" },
+    { "path": "../translation" },
+    { "path": "../ui-components" }
+  ]
+}
