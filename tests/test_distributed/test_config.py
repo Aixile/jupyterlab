@@ -1,7 +1,5 @@
 import json
 import os
-import tempfile
-import pytest
 from jupyterlab_distributed.config import SessionConfig
 
 
