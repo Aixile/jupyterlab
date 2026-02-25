@@ -73,3 +73,79 @@
 .jp-DistributedOutput-outputItem.jp-mod-error {
   color: var(--jp-error-color1);
 }
+
+/* === Sidebar Panel === */
+.jp-DistributedStatusPanel {
+  padding: 8px;
+  overflow-y: auto;
+}
+
+.jp-DistributedStatusPanel-empty {
+  padding: 16px;
+  text-align: center;
+  color: var(--jp-ui-font-color2);
+}
+
+.jp-DistributedStatusPanel-header {
+  margin-bottom: 8px;
+}
+
+.jp-DistributedStatusPanel-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 0;
+}
+
+.jp-DistributedStatusPanel-progress {
+  height: 6px;
+  background: var(--jp-layout-color3);
+  border-radius: 3px;
+  margin: 4px 0 8px;
+  overflow: hidden;
+}
+
+.jp-DistributedStatusPanel-progressBar {
+  height: 100%;
+  background: var(--jp-brand-color1);
+  border-radius: 3px;
+  transition: width 0.3s;
+}
+
+.jp-DistributedStatusPanel-progressBar.jp-mod-warning {
+  background: var(--jp-warn-color1);
+}
+
+.jp-DistributedStatusPanel-nodes {
+  margin: 8px 0;
+}
+
+.jp-DistributedStatusPanel-nodes details {
+  margin: 4px 0;
+}
+
+.jp-DistributedStatusPanel-nodes summary {
+  cursor: pointer;
+  font-size: 12px;
+  padding: 2px 0;
+}
+
+.jp-DistributedStatusPanel-rankList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px 16px;
+}
+
+.jp-DistributedStatusPanel-rank {
+  font-family: var(--jp-code-font-family);
+  font-size: 10px;
+  padding: 1px 4px;
+  background: var(--jp-layout-color2);
+  border-radius: 2px;
+  border: 1px solid var(--jp-border-color2);
+}
+
+.jp-DistributedStatusPanel-memory {
+  margin-top: 8px;
+  font-size: 12px;
+}
