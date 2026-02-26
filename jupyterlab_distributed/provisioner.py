@@ -73,14 +73,14 @@ class DistributedProvisioner(KernelProvisionerBase):
             gateway_port=self.gateway_port,
         )
         import logging
+        import sys
+
         logging.getLogger(__name__).info(
             "Session config written to %s. "
             "Launch torchrun with: --session-config %s",
             self._session_config.path,
             self._session_config.path,
         )
-        # Print to stderr so it's visible in the JupyterLab server log
-        import sys
         print(
             f"\n*** Distributed kernel waiting. Launch torchrun with:\n"
             f"    --session-config {self._session_config.path}\n",
@@ -108,12 +108,21 @@ class DistributedProvisioner(KernelProvisionerBase):
         elapsed = 0.0
 
         while elapsed < timeout:
-            # Re-read config from disk to pick up external updates
             config = SessionConfig.load(self._session_config.path)
             if config.status == "running":
                 self._session_config = config
-                self.connection_info = self._build_connection_info(config)
-                return self.connection_info
+                info = self._build_connection_info(config)
+                self.connection_info = info
+
+                # Write connection file for the KernelManager.
+                # We must set ports on the kernel_manager BEFORE it
+                # writes/checks its connection file, so use load + write.
+                km = self.parent
+                if km is not None:
+                    km.load_connection_info(info)
+                    km.write_connection_file()
+
+                return info
             await asyncio.sleep(_POLL_INTERVAL)
             elapsed += _POLL_INTERVAL
 
@@ -235,6 +244,7 @@ class DistributedProvisioner(KernelProvisionerBase):
             "stdin_port": ports["stdin"],
             "control_port": ports["control"],
             "hb_port": ports["hb"],
-            "key": config.auth_token,
+            # key must be bytes for KernelManager comparison to work
+            "key": config.auth_token.encode(),
             "signature_scheme": "hmac-sha256",
         }

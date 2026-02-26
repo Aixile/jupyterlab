@@ -122,7 +122,7 @@ def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
         f"--IPKernelApp.stdin_port={ports['stdin']}",
         f"--IPKernelApp.control_port={ports['control']}",
         f"--IPKernelApp.hb_port={ports['hb']}",
-        f"--Session.key={config.auth_token.encode()!r}",
+        f"--Session.key={config.auth_token}",
         "--IPKernelApp.no_stdout=False",
         "--IPKernelApp.no_stderr=False",
     ]
