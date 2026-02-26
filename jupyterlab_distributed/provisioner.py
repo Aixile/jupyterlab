@@ -60,6 +60,11 @@ class DistributedProvisioner(KernelProvisionerBase):
 
         This is called before launch_kernel and sets up the config file
         that the external torchrun workers will discover.
+
+        The kernel manager expects the returned dict to contain a 'cmd'
+        key (it pops it before passing to launch_kernel). We include a
+        dummy command since the actual kernel is started externally by
+        torchrun.
         """
         self._session_config = SessionConfig.create(
             base_dir=self.config_base_dir,
@@ -67,6 +72,22 @@ class DistributedProvisioner(KernelProvisionerBase):
             world_size=self.world_size,
             gateway_port=self.gateway_port,
         )
+        import logging
+        logging.getLogger(__name__).info(
+            "Session config written to %s. "
+            "Launch torchrun with: --session-config %s",
+            self._session_config.path,
+            self._session_config.path,
+        )
+        # Print to stderr so it's visible in the JupyterLab server log
+        import sys
+        print(
+            f"\n*** Distributed kernel waiting. Launch torchrun with:\n"
+            f"    --session-config {self._session_config.path}\n",
+            file=sys.stderr,
+        )
+        # Ensure 'cmd' is present — kernel manager pops it from kwargs
+        kwargs.setdefault("cmd", [])
         return kwargs
 
     async def launch_kernel(self, cmd: List[str], **kwargs: Any) -> Dict[str, Any]:
