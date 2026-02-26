@@ -49,12 +49,11 @@ class TestIntegration:
             assert results[1]["status"] == "ok"
             assert results[2]["status"] == "ok"
 
-            # Both should have stdout output (stored in get_outputs, not results)
-            outputs = gw.get_outputs(msg_id)
+            # Both should have stdout output (now inline in results)
             for rank in [1, 2]:
-                assert rank in outputs, f"No outputs for rank {rank}"
+                rank_outputs = results[rank].get("outputs", [])
                 stdout_msgs = [
-                    o for o in outputs[rank]
+                    o for o in rank_outputs
                     if o.get("type") == "stream" and o.get("name") == "stdout"
                 ]
                 assert any(
@@ -160,12 +159,11 @@ class TestIntegration:
             assert results2[1]["status"] == "ok"
             assert results2[2]["status"] == "ok"
 
-            # Verify stdout contains "20" from both workers
-            outputs = gw.get_outputs(msg_id2)
+            # Verify stdout contains "20" from both workers (inline in results)
             for rank in [1, 2]:
-                assert rank in outputs
+                rank_outputs = results2[rank].get("outputs", [])
                 stdout_msgs = [
-                    o for o in outputs[rank]
+                    o for o in rank_outputs
                     if o.get("type") == "stream" and o.get("name") == "stdout"
                 ]
                 assert any("20" in o.get("text", "") for o in stdout_msgs)

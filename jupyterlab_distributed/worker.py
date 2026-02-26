@@ -289,55 +289,43 @@ class Worker:
 
         cell_result = await asyncio.to_thread(_run_in_thread)
 
-        status = cell_result["status"]
-        ename = cell_result["ename"]
-        evalue = cell_result["evalue"]
-        tb_lines = cell_result["traceback"]
-
-        # Send error output message if there was an error
-        if status == "error":
-            error_msg = json.dumps({
+        # Build all outputs inline and send a SINGLE execute_complete
+        # message. This reduces message count from 2-4 to 1 per worker.
+        outputs = []
+        if cell_result["status"] == "error":
+            outputs.append({
                 "type": "error",
                 "msg_id": msg_id,
-                "ename": ename,
-                "evalue": evalue,
-                "traceback": tb_lines,
+                "ename": cell_result["ename"],
+                "evalue": cell_result["evalue"],
+                "traceback": cell_result["traceback"],
             })
-            await ws.send(error_msg)
-
-        # Send captured stdout as stream message
-        stdout_text = cell_result["stdout"]
-        if stdout_text:
-            stream_msg = json.dumps({
+        if cell_result["stdout"]:
+            outputs.append({
                 "type": "stream",
                 "msg_id": msg_id,
                 "name": "stdout",
-                "text": stdout_text,
+                "text": cell_result["stdout"],
             })
-            await ws.send(stream_msg)
-
-        # Send captured stderr as stream message
-        stderr_text = cell_result["stderr"]
-        if stderr_text:
-            stream_msg = json.dumps({
+        if cell_result["stderr"]:
+            outputs.append({
                 "type": "stream",
                 "msg_id": msg_id,
                 "name": "stderr",
-                "text": stderr_text,
+                "text": cell_result["stderr"],
             })
-            await ws.send(stream_msg)
 
-        # Send execute_complete
         complete_msg = {
             "type": "execute_complete",
             "msg_id": msg_id,
-            "status": status,
+            "status": cell_result["status"],
             "execution_time": cell_result["execution_time"],
+            "outputs": outputs,
         }
-        if status == "error":
-            complete_msg["ename"] = ename
-            complete_msg["evalue"] = evalue
-            complete_msg["traceback"] = tb_lines
+        if cell_result["status"] == "error":
+            complete_msg["ename"] = cell_result["ename"]
+            complete_msg["evalue"] = cell_result["evalue"]
+            complete_msg["traceback"] = cell_result["traceback"]
 
         await ws.send(json.dumps(complete_msg))
 

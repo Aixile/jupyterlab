@@ -176,6 +176,8 @@ class Gateway:
         Uses threading.Event (not asyncio.Event) because the gateway's
         WebSocket handler runs in a different thread. We await via
         asyncio.to_thread so the kernel's event loop stays responsive.
+
+        Cleans up per-execution tracking state after collection.
         """
         event = self._completion_events.get(msg_id)
         if event is None:
@@ -191,7 +193,16 @@ class Gateway:
                 len(self._pending_results.get(msg_id, {})),
                 len(self._target_ranks.get(msg_id, set())),
             )
-        return self._pending_results.get(msg_id, {})
+        results = self._pending_results.get(msg_id, {})
+
+        # Clean up per-execution state to prevent memory leak
+        self._pending_results.pop(msg_id, None)
+        self._pending_outputs.pop(msg_id, None)
+        self._completion_events.pop(msg_id, None)
+        self._output_sizes.pop(msg_id, None)
+        self._target_ranks.pop(msg_id, None)
+
+        return results
 
     def get_outputs(self, msg_id: str) -> dict[int, list[dict[str, Any]]]:
         """Get buffered outputs for a given execution msg_id."""
@@ -295,7 +306,7 @@ class Gateway:
             async for raw_msg in ws:
                 try:
                     worker_msg = json.loads(raw_msg)
-                    await self._handle_worker_message(rank, worker_msg)
+                    await self._handle_worker_message(rank, worker_msg, len(raw_msg))
                 except json.JSONDecodeError:
                     logger.warning(
                         "Invalid JSON from worker rank %d: %s", rank, raw_msg
@@ -323,7 +334,7 @@ class Gateway:
                 self._fail_pending_for_rank(rank)
 
     async def _handle_worker_message(
-        self, rank: int, msg: dict[str, Any]
+        self, rank: int, msg: dict[str, Any], raw_size: int = 0
     ) -> None:
         """Dispatch an incoming message from a worker by type."""
         msg_type = msg.get("type")
@@ -335,11 +346,10 @@ class Gateway:
             if msg_id not in self._pending_results:
                 self._pending_results[msg_id] = {}
 
-            # Merge buffered outputs into the result so that
-            # collect_results() returns complete per-rank data
-            # including all stream/display/error messages.
-            outputs = self._pending_outputs.get(msg_id, {}).get(rank, [])
-            msg["outputs"] = outputs
+            # Workers now send outputs inline in execute_complete.
+            # Fall back to buffered outputs for backward compatibility.
+            if "outputs" not in msg:
+                msg["outputs"] = self._pending_outputs.get(msg_id, {}).get(rank, [])
 
             self._pending_results[msg_id][rank] = msg
 
@@ -369,8 +379,8 @@ class Gateway:
             if rank not in self._output_sizes[msg_id]:
                 self._output_sizes[msg_id][rank] = 0
 
-            # Enforce per-worker output size limit
-            msg_size = len(json.dumps(msg))
+            # Enforce per-worker output size limit (use raw_size to avoid re-serialization)
+            msg_size = raw_size or len(str(msg))
             if self._output_sizes[msg_id][rank] + msg_size <= MAX_OUTPUT_SIZE:
                 self._pending_outputs[msg_id][rank].append(msg)
                 self._output_sizes[msg_id][rank] += msg_size

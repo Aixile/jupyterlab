@@ -85,11 +85,10 @@ class TestWorker:
             )
             assert results[1]["status"] == "ok"
 
-            # Check that stdout was captured in outputs
-            outputs = gateway.get_outputs(msg_id)
-            assert 1 in outputs
+            # Check that stdout was captured in outputs (now inline in results)
+            rank_outputs = results[1].get("outputs", [])
             stdout_msgs = [
-                o for o in outputs[1]
+                o for o in rank_outputs
                 if o["type"] == "stream" and o.get("name") == "stdout"
             ]
             assert len(stdout_msgs) > 0

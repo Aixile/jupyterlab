@@ -107,32 +107,33 @@ class DistributedKernel(IPythonKernel):
     ) -> dict[str, Any]:
         """Broadcast code to workers, execute locally, and collect results.
 
-        Steps:
-        1. Broadcast the cell code to all connected workers via the gateway.
-        2. Execute the code locally on rank-0 through the parent do_execute.
-        3. Collect execution results from all workers.
-        4. Publish per-rank outputs as a custom display_data message.
-        5. Log warnings for any failed ranks.
+        Broadcast is fire-and-forget (doesn't block). Local execution and
+        worker result collection run in parallel via asyncio.gather.
         """
-        # 1. Broadcast to workers
+        import asyncio
+
+        # 1. Broadcast to workers (fire-and-forget, don't await sends)
         msg_id = await self._gateway.broadcast_execute(code, "")
 
-        # 2. Execute locally on rank-0
-        result = await self._parent_do_execute(
-            code, silent, store_history, user_expressions, allow_stdin
+        # 2. Execute locally + collect worker results IN PARALLEL
+        async def _collect() -> dict:
+            try:
+                return await self._gateway.collect_results(msg_id)
+            except Exception:
+                logger.exception("Error collecting worker results")
+                return {}
+
+        result, worker_results = await asyncio.gather(
+            self._parent_do_execute(
+                code, silent, store_history, user_expressions, allow_stdin
+            ),
+            _collect(),
         )
 
-        # 3. Collect worker results
-        try:
-            worker_results = await self._gateway.collect_results(msg_id)
-        except Exception:
-            logger.exception("Error collecting worker results")
-            worker_results = {}
-
-        # 4. Publish per-rank outputs
+        # 3. Publish per-rank outputs
         self._publish_distributed_outputs(worker_results)
 
-        # 5. Check for failures and log warnings
+        # 4. Log warnings for failed ranks
         failed_ranks = [
             r for r, res in worker_results.items()
             if res.get("status") != "ok"
