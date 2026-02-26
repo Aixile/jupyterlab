@@ -20,20 +20,71 @@ Rank-0 Kernel (compute node, via torchrun)
 
 When you run a cell, it executes on **all ranks simultaneously**. Rank-0 is the real Jupyter kernel — autocomplete, variable inspector, and inspection all show rank-0's live objects (real DDP models, real distributed tensors).
 
-## Single-Node Setup (Development / Testing)
+## Installation
 
-Test distributed execution on a single machine without SLURM or torchrun. Useful for development, debugging, and verifying your code before scaling to a cluster.
+### Quick Install (recommended for testing)
 
-### 1. Install
+Uses the official pre-built JupyterLab frontend assets with your fork's Python code. The distributed backend (gateway, worker, kernel, magics) all work. The only things skipped are the custom MIME renderer and sidebar panel (not wired up yet).
 
 ```bash
-# Clone the JupyterLab fork
+# Create a fresh conda env
+conda create -n distributed-jlab python=3.10 -y
+conda activate distributed-jlab
+
+# Install pre-built JupyterLab + dependencies
+pip install jupyterlab websockets
+pip install torch --index-url https://download.pytorch.org/whl/cu128  # or cpu
+
+# Clone and install the fork (Python code only)
+git clone https://github.com/Aixile/jupyterlab.git
+cd jupyterlab
+pip install -e . --no-deps --no-build-isolation
+
+# Start from any directory
+jupyter lab --ip=0.0.0.0
+```
+
+### Full Build from Source (includes custom frontend)
+
+Builds the complete JupyterLab frontend including the distributed extension packages. Takes ~10 minutes the first time. Requires Node.js 20+.
+
+```bash
+conda create -n distributed-jlab python=3.10 -y
+conda activate distributed-jlab
+
 git clone https://github.com/Aixile/jupyterlab.git
 cd jupyterlab
 
-# Install dependencies into your conda env
-pip install websockets ipykernel
+# Install Python package in dev mode
+pip install -e ".[dev]"
+pip install websockets torch --index-url https://download.pytorch.org/whl/cu128
+
+# Install JS dependencies and build frontend
+jlpm install          # ~2 min
+jlpm run build        # ~5-10 min
+jupyter lab build     # ~2 min
+
+# Start from any directory
+jupyter lab --ip=0.0.0.0
 ```
+
+> **Note:** After the initial build, you only need to re-run `jlpm run build`
+> if you change TypeScript files. Python changes take effect immediately
+> with the `-e` (editable) install.
+
+### Troubleshooting Install
+
+**"JupyterLab application assets not found"** — You used `pip install -e .`
+without building the frontend. Either run `jlpm install && jlpm run build && jupyter lab build`, or use the Quick Install method above.
+
+**"No module named 'jupyterlab_distributed'"** — Add the repo to your
+PYTHONPATH: `PYTHONPATH=/path/to/jupyterlab jupyter lab`
+
+---
+
+## Single-Node Setup (Development / Testing)
+
+Test distributed execution on a single machine without SLURM or torchrun. Useful for development, debugging, and verifying your code before scaling to a cluster.
 
 ### 2. Option A: Script-based (no JupyterLab UI needed)
 
