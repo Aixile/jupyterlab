@@ -162,13 +162,28 @@ class DistributedKernel(IPythonKernel):
                 "execution_time": result.get("execution_time", 0),
             }
 
+        # Build a readable text summary of per-rank outputs
+        lines = []
+        for rank_str in sorted(ranks_data.keys(), key=int):
+            rd = ranks_data[rank_str]
+            for o in rd.get("outputs", []):
+                if o.get("type") == "stream" and o.get("text"):
+                    for line in o["text"].splitlines():
+                        lines.append(f"[rank {rank_str}] {line}")
+                elif o.get("type") == "error":
+                    lines.append(
+                        f"[rank {rank_str}] ERROR: {o.get('ename', '')}: "
+                        f"{o.get('evalue', '')}"
+                    )
+        text_summary = "\n".join(lines) if lines else f"Distributed execution: {len(worker_results)} ranks (no output)"
+
         content = {
             "data": {
                 DISTRIBUTED_MIME: {
                     "type": "rank_outputs",
                     "ranks": ranks_data,
                 },
-                "text/plain": f"Distributed execution: {len(worker_results)} ranks",
+                "text/plain": text_summary,
             },
             "metadata": {},
             "transient": {},
