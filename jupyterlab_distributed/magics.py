@@ -233,3 +233,9 @@ class DistributedMagics(Magics):
             loop.create_task(gateway.send_to_rank(target_rank, cell, cell_id=""))
         except RuntimeError:
             asyncio.run(gateway.send_to_rank(target_rank, cell, cell_id=""))
+
+
+def load_ipython_extension(ipython):
+    """Register distributed magics when loaded via %load_ext."""
+    magics = DistributedMagics(shell=ipython)
+    ipython.register_magics(magics)

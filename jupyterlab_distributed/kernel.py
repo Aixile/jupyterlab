@@ -34,6 +34,17 @@ class DistributedKernel(IPythonKernel):
         super().__init__(**kwargs)
         self.distributed_enabled: bool = False
         self._gateway: Gateway | None = None
+        self._register_magics()
+
+    def _register_magics(self) -> None:
+        """Register %distributed and %%rank magics in the shell."""
+        try:
+            from .magics import DistributedMagics
+            magics = DistributedMagics(shell=self.shell)
+            magics.kernel = self
+            self.shell.register_magics(magics)
+        except Exception:
+            logger.warning("Failed to register distributed magics", exc_info=True)
 
     def set_gateway(self, gateway: Gateway) -> None:
         """Attach a Gateway instance used for worker communication."""
