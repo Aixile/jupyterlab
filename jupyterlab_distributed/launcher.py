@@ -245,3 +245,6 @@ def main() -> None:
         _run_rank0(config, args.log_dir)
     else:
         _run_worker(rank, config, args.log_dir)
+
+if __name__ == "__main__":
+    main()

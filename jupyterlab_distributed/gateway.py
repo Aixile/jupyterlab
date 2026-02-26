@@ -63,11 +63,17 @@ class Gateway:
 
     async def start(self) -> None:
         """Start the WebSocket server."""
-        self._server = await websockets.serve(
+        # websockets < 14: serve() returns a coroutine (needs await)
+        # websockets >= 14: serve() returns a Server directly
+        server = websockets.serve(
             self._handle_connection,
             "0.0.0.0",
             self.port,
         )
+        if hasattr(server, "__await__"):
+            self._server = await server
+        else:
+            self._server = server
         # If port was 0, update to the actual assigned port
         for sock in self._server.sockets:
             addr = sock.getsockname()
