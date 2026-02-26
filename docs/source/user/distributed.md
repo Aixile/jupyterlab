@@ -20,7 +20,208 @@ Rank-0 Kernel (compute node, via torchrun)
 
 When you run a cell, it executes on **all ranks simultaneously**. Rank-0 is the real Jupyter kernel — autocomplete, variable inspector, and inspection all show rank-0's live objects (real DDP models, real distributed tensors).
 
-## Quick Start
+## Single-Node Setup (Development / Testing)
+
+Test distributed execution on a single machine without SLURM or torchrun. Useful for development, debugging, and verifying your code before scaling to a cluster.
+
+### 1. Install
+
+```bash
+# Clone the JupyterLab fork
+git clone https://github.com/Aixile/jupyterlab.git
+cd jupyterlab
+
+# Install dependencies into your conda env
+pip install websockets ipykernel
+```
+
+### 2. Option A: Script-based (no JupyterLab UI needed)
+
+The simplest way to test distributed execution — runs entirely from the command line:
+
+```python
+# test_local.py
+import asyncio, sys
+sys.path.insert(0, '/path/to/jupyterlab')
+
+from jupyterlab_distributed.gateway import Gateway
+from jupyterlab_distributed.worker import Worker
+
+async def main():
+    # Start gateway
+    gw = Gateway(port=0, auth_token='test', expected_workers=2)
+    await gw.start()
+    url = f'ws://localhost:{gw.port}/ws'
+    print(f'Gateway on port {gw.port}')
+
+    # Start 2 workers
+    w1 = Worker(rank=1, server_url=url, auth_token='test')
+    w2 = Worker(rank=2, server_url=url, auth_token='test')
+    t1 = asyncio.create_task(w1.run())
+    t2 = asyncio.create_task(w2.run())
+
+    # Wait for registration
+    while not gw.all_workers_registered():
+        await asyncio.sleep(0.1)
+    print(f'Workers: {sorted(gw.workers.keys())}')
+
+    # Execute on all workers
+    msg_id = await gw.broadcast_execute(
+        "import os; print(f'Hello from PID {os.getpid()}')", 'cell-1'
+    )
+    results = await gw.collect_results(msg_id)
+    for rank in sorted(results.keys()):
+        r = results[rank]
+        outs = [o['text'] for o in r.get('outputs', [])
+                if o.get('type') == 'stream']
+        print(f"Rank {rank}: {''.join(outs).strip()}")
+
+    # Cleanup
+    await gw.broadcast_shutdown()
+    await gw.stop()
+
+asyncio.run(main())
+```
+
+```bash
+PYTHONPATH=/path/to/jupyterlab python test_local.py
+```
+
+### 3. Option B: Subprocess workers (closer to production)
+
+Launch workers as real separate processes, same as torchrun would:
+
+```python
+# test_subprocess.py
+import asyncio, json, os, subprocess, sys
+sys.path.insert(0, '/path/to/jupyterlab')
+
+from jupyterlab_distributed.gateway import Gateway
+
+PYTHON = sys.executable  # or path to your conda env python
+
+WORKER_SCRIPT = '''
+import asyncio, sys
+sys.path.insert(0, '/path/to/jupyterlab')
+from jupyterlab_distributed.worker import Worker
+w = Worker(rank=int(sys.argv[1]), server_url=sys.argv[2], auth_token=sys.argv[3])
+asyncio.run(w.run())
+'''
+
+async def main():
+    gw = Gateway(port=0, auth_token='test', expected_workers=4)
+    await gw.start()
+    url = f'ws://localhost:{gw.port}/ws'
+    print(f'Gateway on port {gw.port}')
+
+    # Launch 4 worker processes (simulating 4 GPUs)
+    procs = []
+    for rank in range(1, 5):
+        p = subprocess.Popen(
+            [PYTHON, '-c', WORKER_SCRIPT, str(rank), url, 'test'],
+            env={**os.environ, 'PYTHONPATH': '/path/to/jupyterlab'},
+        )
+        procs.append(p)
+
+    while not gw.all_workers_registered():
+        await asyncio.sleep(0.1)
+    print(f'Workers: {sorted(gw.workers.keys())}')
+
+    # Broadcast torch import
+    msg_id = await gw.broadcast_execute(
+        "import torch; print(f'torch {torch.__version__}, CUDA={torch.cuda.is_available()}')",
+        'torch-test'
+    )
+    results = await gw.collect_results(msg_id)
+    for rank in sorted(results.keys()):
+        r = results[rank]
+        outs = [o['text'] for o in r.get('outputs', []) if o.get('type') == 'stream']
+        print(f"Rank {rank}: status={r['status']}, output={''.join(outs).strip()}")
+
+    await gw.broadcast_shutdown()
+    await gw.stop()
+    for p in procs:
+        p.wait(timeout=5)
+
+asyncio.run(main())
+```
+
+```bash
+PYTHONPATH=/path/to/jupyterlab python test_subprocess.py
+```
+
+Expected output:
+```
+Gateway on port 41541
+Workers: [1, 2, 3, 4]
+Rank 1: status=ok, output=torch 2.8.0+cu128, CUDA=True
+Rank 2: status=ok, output=torch 2.8.0+cu128, CUDA=True
+Rank 3: status=ok, output=torch 2.8.0+cu128, CUDA=True
+Rank 4: status=ok, output=torch 2.8.0+cu128, CUDA=True
+```
+
+### 4. Option C: Inside JupyterLab notebook
+
+Start JupyterLab and use the gateway API directly from notebook cells:
+
+```bash
+PYTHONPATH=/path/to/jupyterlab jupyter lab
+```
+
+In a notebook (use a kernel that has torch installed):
+
+```python
+# Cell 1: Start gateway and workers
+import sys, asyncio
+sys.path.insert(0, '/path/to/jupyterlab')
+from jupyterlab_distributed.gateway import Gateway
+from jupyterlab_distributed.worker import Worker
+
+gw = Gateway(port=0, auth_token='demo', expected_workers=3)
+await gw.start()
+print(f'Gateway on port {gw.port}')
+
+workers, tasks = [], []
+for i in range(1, 4):
+    w = Worker(rank=i, server_url=f'ws://localhost:{gw.port}/ws', auth_token='demo')
+    workers.append(w)
+    tasks.append(asyncio.create_task(w.run()))
+
+for _ in range(50):
+    if gw.all_workers_registered(): break
+    await asyncio.sleep(0.1)
+print(f'Workers: {sorted(gw.workers.keys())}')
+```
+
+```python
+# Cell 2: Broadcast execution
+msg_id = await gw.broadcast_execute("x = 42; print(f'result: {x * 2}')", 'test')
+results = await gw.collect_results(msg_id)
+for rank in sorted(results.keys()):
+    r = results[rank]
+    outs = [o['text'] for o in r.get('outputs', []) if o.get('type') == 'stream']
+    print(f"Rank {rank}: {''.join(outs).strip()}")
+```
+
+> **Note:** When running workers in-process (Option C), `print()` output from
+> subsequent cells may not display in the notebook UI due to stdout capture
+> by the worker threads. This is an in-process limitation only. With real
+> subprocess workers (Options B or torchrun), each worker has its own stdout
+> and output works correctly.
+
+### 5. Run the test suite
+
+```bash
+# Unit + integration tests (126 tests, no GPU needed)
+python -m pytest tests/test_distributed/ -v --noconftest
+
+# Subprocess-based verification (needs torch)
+PYTHONPATH=. python tests/test_distributed_subprocess.py
+```
+
+---
+
+## Multi-Node Setup (SLURM / HPC)
 
 ### 1. Install
 
