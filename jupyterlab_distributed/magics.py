@@ -165,18 +165,14 @@ class DistributedMagics(Magics):
             print("Error: No gateway connected.")
             return
 
-        # broadcast_shutdown is a coroutine; run it synchronously
-        coro = gateway.broadcast_shutdown()
+        # broadcast_shutdown is a coroutine — schedule as fire-and-forget.
+        # We cannot block the event loop thread waiting for the coroutine
+        # (that would deadlock), and we don't need the result.
         try:
             loop = asyncio.get_running_loop()
+            loop.create_task(gateway.broadcast_shutdown())
         except RuntimeError:
-            loop = None
-
-        if loop is not None and loop.is_running():
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
-            future.result(timeout=10)
-        else:
-            asyncio.run(coro)
+            asyncio.run(gateway.broadcast_shutdown())
 
         print("Hard restart: shutdown broadcast sent to all workers.")
 
@@ -224,24 +220,16 @@ class DistributedMagics(Magics):
             print("Error: No gateway connected.")
             return
 
-        try:
-            coro = gateway.send_to_rank(target_rank, cell, cell_id="")
-            try:
-                loop = asyncio.get_running_loop()
-            except RuntimeError:
-                loop = None
-
-            if loop is not None and loop.is_running():
-                # We are inside a running event loop (e.g. Jupyter kernel).
-                # Use run_coroutine_threadsafe to schedule on the running
-                # loop and block until the send completes so that exceptions
-                # (e.g. KeyError for unknown ranks) propagate to the caller.
-                future = asyncio.run_coroutine_threadsafe(coro, loop)
-                future.result(timeout=10)
-            else:
-                # No running event loop — run synchronously
-                asyncio.run(coro)
-        except KeyError:
+        # Validate rank is connected before scheduling async send
+        if target_rank not in gateway.workers:
             print(f"Error: Rank {target_rank} is not connected")
-        except Exception as exc:
-            print(f"Error: Could not send to rank {target_rank}: {exc}")
+            return
+
+        # Schedule fire-and-forget. We cannot block the event loop thread
+        # waiting for the coroutine (that would deadlock). The actual output
+        # will stream back through the gateway → kernel → frontend pipeline.
+        try:
+            loop = asyncio.get_running_loop()
+            loop.create_task(gateway.send_to_rank(target_rank, cell, cell_id=""))
+        except RuntimeError:
+            asyncio.run(gateway.send_to_rank(target_rank, cell, cell_id=""))

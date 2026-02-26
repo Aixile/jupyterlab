@@ -231,12 +231,11 @@ class TestRankMagic:
 
     def test_rank_not_found(self, magics, capsys):
         """'%%rank N' for unknown rank prints an error."""
-        magics.kernel._gateway.send_to_rank = AsyncMock(
-            side_effect=KeyError("rank 99 not found")
-        )
+        # Rank 99 is not in gateway.workers (only 0 and 1 are),
+        # so synchronous validation catches it before async send.
         magics.rank("99", "code = 1")
         out = capsys.readouterr().out
-        assert "error" in out.lower() or "not found" in out.lower() or "99" in out
+        assert "not connected" in out.lower() or "error" in out.lower()
 
 
 class TestNoKernel:

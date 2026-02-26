@@ -176,17 +176,23 @@ class Worker:
             elif msg_type == "interrupt":
                 self._handle_interrupt()
             elif msg_type == "reset":
-                # Cancel any running execution first
+                # Interrupt any running execution and wait for the thread
+                # to actually finish. Simply cancelling the asyncio task
+                # does NOT stop the background thread from to_thread().
                 if self._current_execution and not self._current_execution.done():
-                    self._current_execution.cancel()
+                    self._handle_interrupt()
                     try:
-                        await self._current_execution
-                    except asyncio.CancelledError:
+                        await asyncio.wait_for(self._current_execution, timeout=5.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
                         pass
                 self._handle_reset()
             elif msg_type == "shutdown":
                 if self._current_execution and not self._current_execution.done():
-                    self._current_execution.cancel()
+                    self._handle_interrupt()
+                    try:
+                        await asyncio.wait_for(self._current_execution, timeout=5.0)
+                    except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
+                        pass
                 self._shutdown = True
                 break
             else:
@@ -350,22 +356,21 @@ class Worker:
         import ctypes
 
         tid = getattr(self, "_exec_thread_id", None)
-        if tid is not None:
-            try:
-                ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                    ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
-                )
-                if ret > 1:
-                    # More than one thread affected — undo to be safe
-                    ctypes.pythonapi.PyThreadState_SetAsyncExc(
-                        ctypes.c_ulong(tid), None
-                    )
-            except (OSError, ValueError, SystemError):
-                pass
+        if tid is None:
+            # No execution in progress — nothing to interrupt
             return
 
-        # Fallback: raise SIGINT on the process (main thread)
-        signal.raise_signal(signal.SIGINT)
+        try:
+            ret = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                ctypes.c_ulong(tid), ctypes.py_object(KeyboardInterrupt)
+            )
+            if ret > 1:
+                # More than one thread affected — undo to be safe
+                ctypes.pythonapi.PyThreadState_SetAsyncExc(
+                    ctypes.c_ulong(tid), None
+                )
+        except (OSError, ValueError, SystemError):
+            pass
 
     def _handle_reset(self) -> None:
         """Clear the IPython namespace."""
