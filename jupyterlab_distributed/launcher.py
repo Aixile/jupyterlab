@@ -48,15 +48,19 @@ def detect_world_size() -> int:
 
 
 def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
-    """Start the Gateway and DistributedKernel on rank-0.
+    """Start the Gateway and IPython kernel on rank-0.
 
-    Starts the WebSocket gateway so workers can connect, updates the
-    session config with the actual host/port and marks it ``running``.
-    The full IPython kernel launch (ZMQ sockets, IPKernelApp) is left
-    as a TODO for the Kernel Provisioner task (Task 7), but the gateway
-    is fully functional.
+    1. Starts the WebSocket gateway so workers can connect.
+    2. Starts the IPython kernel (DistributedKernel) on the ZMQ ports
+       specified in the session config.
+    3. Updates the session config with actual host/port and marks it
+       ``running`` so the provisioner can connect.
     """
+    import socket as _socket
+    import threading
+
     from .gateway import Gateway
+    from .kernel import DistributedKernel
 
     logger.info(
         "Rank-0: starting gateway on port %d for kernel %s (world_size=%d)",
@@ -65,44 +69,83 @@ def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
         config.world_size,
     )
 
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
+    # --- Start gateway in a background thread with its own event loop ---
     gateway = Gateway(
         port=config.gateway_port,
         auth_token=config.auth_token,
-        expected_workers=config.world_size - 1,  # rank-0 is not a worker
+        expected_workers=config.world_size - 1,
     )
 
+    gateway_loop = asyncio.new_event_loop()
+
+    def run_gateway():
+        asyncio.set_event_loop(gateway_loop)
+        gateway_loop.run_until_complete(gateway.start())
+        logger.info("Rank-0: gateway started on port %d", gateway.port)
+        gateway_loop.run_forever()
+
+    gw_thread = threading.Thread(target=run_gateway, daemon=True)
+    gw_thread.start()
+
+    # Wait for gateway to be ready
+    import time
+
+    for _ in range(50):
+        if gateway.port != 0:
+            break
+        time.sleep(0.1)
+
+    # Update config so provisioner and workers can find us
+    actual_host = _socket.gethostname()
+    config.update(
+        status="running",
+        host=actual_host,
+        gateway_port=gateway.port,
+    )
+    logger.info(
+        "Rank-0: config updated — host=%s, gateway_port=%d, zmq_ports=%s",
+        actual_host,
+        gateway.port,
+        config.zmq_ports,
+    )
+
+    # --- Start IPython kernel on the ZMQ ports from session config ---
+    from ipykernel.kernelapp import IPKernelApp
+
+    # Build argv for IPKernelApp with the specific ZMQ ports
+    ports = config.zmq_ports
+    kernel_argv = [
+        "--IPKernelApp.transport=tcp",
+        f"--IPKernelApp.ip={actual_host}",
+        f"--IPKernelApp.shell_port={ports['shell']}",
+        f"--IPKernelApp.iopub_port={ports['iopub']}",
+        f"--IPKernelApp.stdin_port={ports['stdin']}",
+        f"--IPKernelApp.control_port={ports['control']}",
+        f"--IPKernelApp.hb_port={ports['hb']}",
+        f"--Session.key={config.auth_token.encode()!r}",
+        "--IPKernelApp.no_stdout=False",
+        "--IPKernelApp.no_stderr=False",
+    ]
+
+    logger.info("Rank-0: starting DistributedKernel on ZMQ ports %s", ports)
+
+    app = IPKernelApp.instance(kernel_class=DistributedKernel)
+    app.initialize(kernel_argv)
+
+    # Wire up the gateway to the kernel
+    kernel = app.kernel
+    kernel.set_gateway(gateway)
+    kernel.distributed_enabled = True
+    logger.info("Rank-0: kernel ready, distributed mode enabled")
+
+    # Start the kernel (blocks forever)
     try:
-        loop.run_until_complete(gateway.start())
-
-        # Update config with actual host and port (port may have changed if 0)
-        import socket as _socket
-
-        actual_host = config.host or _socket.gethostname()
-        config.update(
-            status="running",
-            host=actual_host,
-            gateway_port=gateway.port,
-        )
-
-        logger.info(
-            "Rank-0: gateway started on %s:%d",
-            actual_host,
-            gateway.port,
-        )
-
-        # TODO: Start DistributedKernel (IPKernelApp) here.
-        # This will be implemented by the Kernel Provisioner task (Task 7).
-
-        # Keep the event loop running so the gateway stays alive
-        loop.run_forever()
+        app.start()
     except KeyboardInterrupt:
         logger.info("Rank-0: interrupted, shutting down")
     finally:
-        loop.run_until_complete(gateway.stop())
-        loop.close()
+        gateway_loop.call_soon_threadsafe(gateway_loop.stop)
+        gw_thread.join(timeout=5)
 
 
 def _run_worker(rank: int, config: SessionConfig, log_dir: str | None) -> None:
