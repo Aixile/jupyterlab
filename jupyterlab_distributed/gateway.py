@@ -9,6 +9,7 @@ The gateway runs on rank-0 and handles:
 import asyncio
 import json
 import logging
+import threading
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -56,7 +57,10 @@ class Gateway:
         self.workers: dict[int, WorkerInfo] = {}
         self._pending_results: dict[str, dict[int, dict[str, Any]]] = {}
         self._pending_outputs: dict[str, dict[int, list[dict[str, Any]]]] = {}
-        self._completion_events: dict[str, asyncio.Event] = {}
+        # Use threading.Event (not asyncio.Event) because the gateway runs
+        # in a background thread while collect_results is called from the
+        # kernel's event loop thread. asyncio.Event is NOT thread-safe.
+        self._completion_events: dict[str, threading.Event] = {}
         self._output_sizes: dict[str, dict[int, int]] = {}
         self._target_ranks: dict[str, set[int]] = {}
         self._server: Any = None
@@ -107,7 +111,7 @@ class Gateway:
         self._pending_results[msg_id] = {}
         self._pending_outputs[msg_id] = {}
         self._output_sizes[msg_id] = {}
-        self._completion_events[msg_id] = asyncio.Event()
+        self._completion_events[msg_id] = threading.Event()
 
         # Snapshot: record which ranks should respond to this message
         self._target_ranks[msg_id] = set(self.workers.keys())
@@ -135,7 +139,7 @@ class Gateway:
         self._pending_results[msg_id] = {}
         self._pending_outputs[msg_id] = {}
         self._output_sizes[msg_id] = {}
-        self._completion_events[msg_id] = asyncio.Event()
+        self._completion_events[msg_id] = threading.Event()
         self._target_ranks[msg_id] = {rank}
 
         message = json.dumps({
@@ -168,13 +172,25 @@ class Gateway:
         """Wait for all workers to send execute_complete for msg_id.
 
         Returns a dict mapping rank -> result dict.
-        Raises asyncio.TimeoutError if not all workers respond in time.
+
+        Uses threading.Event (not asyncio.Event) because the gateway's
+        WebSocket handler runs in a different thread. We await via
+        asyncio.to_thread so the kernel's event loop stays responsive.
         """
         event = self._completion_events.get(msg_id)
         if event is None:
             return {}
 
-        await asyncio.wait_for(event.wait(), timeout=self.timeout)
+        # threading.Event.wait() is blocking — run in executor to avoid
+        # blocking the kernel's event loop
+        completed = await asyncio.to_thread(event.wait, self.timeout)
+        if not completed:
+            logger.warning(
+                "Timeout collecting results for %s. Got %d/%d",
+                msg_id,
+                len(self._pending_results.get(msg_id, {})),
+                len(self._target_ranks.get(msg_id, set())),
+            )
         return self._pending_results.get(msg_id, {})
 
     def get_outputs(self, msg_id: str) -> dict[int, list[dict[str, Any]]]:
@@ -209,18 +225,22 @@ class Gateway:
                         event.set()
 
     async def _broadcast(self, message: str) -> None:
-        """Send a message to all connected workers."""
-        disconnected: list[int] = []
-        for rank, worker in self.workers.items():
+        """Send a message to all connected workers in parallel."""
+        async def _send(rank: int, worker: WorkerInfo) -> int | None:
             try:
                 await worker.ws.send(message)
+                return None
             except websockets.exceptions.ConnectionClosed:
                 logger.warning("Worker rank %d disconnected during broadcast", rank)
-                disconnected.append(rank)
+                return rank
 
-        for rank in disconnected:
-            del self.workers[rank]
-            self._fail_pending_for_rank(rank)
+        results = await asyncio.gather(
+            *[_send(r, w) for r, w in self.workers.items()]
+        )
+        for rank in results:
+            if rank is not None:
+                del self.workers[rank]
+                self._fail_pending_for_rank(rank)
 
     async def _handle_connection(self, ws: WebSocketServerProtocol) -> None:
         """Handle a new WebSocket connection from a worker."""
