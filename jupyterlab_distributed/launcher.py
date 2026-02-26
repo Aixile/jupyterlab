@@ -62,18 +62,26 @@ def _run_rank0(config: SessionConfig, log_dir: str | None) -> None:
     from .gateway import Gateway
     from .kernel import DistributedKernel
 
+    # Use torchrun's WORLD_SIZE if available (overrides config)
+    actual_world_size = detect_world_size()
+    if actual_world_size > 1:
+        config.world_size = actual_world_size
+    expected_workers = config.world_size - 1  # rank-0 is the kernel
+
     logger.info(
-        "Rank-0: starting gateway on port %d for kernel %s (world_size=%d)",
+        "Rank-0: starting gateway on port %d for kernel %s "
+        "(world_size=%d, expected_workers=%d)",
         config.gateway_port,
         config.kernel_id,
         config.world_size,
+        expected_workers,
     )
 
     # --- Start gateway in a background thread with its own event loop ---
     gateway = Gateway(
         port=config.gateway_port,
         auth_token=config.auth_token,
-        expected_workers=config.world_size - 1,
+        expected_workers=expected_workers,
     )
 
     gateway_loop = asyncio.new_event_loop()

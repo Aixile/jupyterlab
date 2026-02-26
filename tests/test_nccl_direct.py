@@ -21,10 +21,12 @@ def main():
     from jupyterlab_distributed.config import SessionConfig
 
     # Create session config
+    # world_size must match torchrun's --nproc_per_node (total processes)
+    # rank-0 = kernel, ranks 1-(N-1) = workers, so expected_workers = N-1
     config = SessionConfig.create(
         base_dir=os.path.expanduser("~"),
         kernel_id="nccl-direct-test",
-        world_size=5,  # rank-0 kernel + 4 workers
+        world_size=4,  # matches --nproc_per_node 4
         gateway_port=0,
     )
     print(f"Session config: {config.path}")
